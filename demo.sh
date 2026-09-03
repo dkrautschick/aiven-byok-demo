@@ -1,12 +1,12 @@
 
 set -euo pipefail
 
-PROJECT="${PROJECT:-dkraut-demo}"
+PROJECT="${PROJECT:-YOUR_AIVEN_PROJECT}"
 GCP_PROJECT="${GCP_PROJECT:-aiven-sa-demo}"
 REGION="${REGION:-europe-west3}"
 CLOUD_NAME="${CLOUD_NAME:-google-europe-west3}"
-KEYRING_NAME="${KEYRING_NAME:-aiven-byok-dkraut-keyring}"
-KEY_NAME="${KEY_NAME:-aiven-byok-dkraut-key}"
+KEYRING_NAME="${KEYRING_NAME:-YOUR_GCP_KEYRING_NAME}"
+KEY_NAME="${KEY_NAME:-YOUR_GCP_KEY_NAME}"
 KAFKA_PLAN="${KAFKA_PLAN:-business-4}"
 PG_PLAN="${PG_PLAN:-startup-4}"
 KAFKA_NAME="${KAFKA_NAME:-demo-kafka-byok}"
