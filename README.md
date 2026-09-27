@@ -1,148 +1,155 @@
-# Bring Your Own Key: Why Encryption Sovereignty Is No Longer Optional
+# aiven-byok-demo
 
-Anyone running databases, message queues, or analytics platforms in the
-cloud today encrypts data at rest almost by default — most managed service
-providers turn that on automatically. The real question has shifted: **who
-actually owns the key that controls that encryption?**
+Working, cloud-by-cloud examples of setting up **Bring Your Own Key (BYOK)** for Aiven services (Kafka + PostgreSQL) using **AWS KMS**, **Azure Key Vault**, and **Google Cloud KMS**. Each cloud has both a shell-script (`avn` CLI) walkthrough and an equivalent Terraform configuration.
 
-That's exactly where **Bring Your Own Key (BYOK)** comes in. And as
-regulatory requirements, customer expectations, and the attack surface of
-cloud infrastructure all keep growing, BYOK is less and less an enterprise
-gimmick — it's one of the few mechanisms that puts real cryptographic
-control back in the hands of the organization the data actually belongs to.
+Repo: https://github.com/dkrautschick/aiven-byok-demo
 
-## What BYOK actually solves
+## What this repo shows
 
-With most managed data services, the provider generates and manages the
-encryption key itself. That's convenient — but it also means the provider
-is technically capable of decrypting your data, and access is limited only
-by trust, not by cryptography.
+BYOK lets you keep the encryption key for your Aiven service in a key management system that *you* control, instead of a key Aiven generates and manages for you. Aiven is only ever granted a narrow, revocable permission to use that key for encrypt/decrypt operations — never to export, rotate, or delete it. This repo demonstrates the full loop for each of the three major clouds:
 
-BYOK flips that model. The key is created and stays in a key management
-system (KMS) the organization controls itself — AWS KMS, Google Cloud KMS,
-Azure Key Vault, or an on-prem HSM. The service provider only gets a scoped,
-revocable permission to use that key for encrypt/decrypt operations. Raw key
-material never leaves your own environment.
+1. Create a customer-managed key in your own cloud KMS.
+2. Grant Aiven's project a scoped permission to use that key.
+3. Register the key as a CMK (customer-managed key) in your Aiven project.
+4. Create a Kafka and a PostgreSQL service on Aiven, each encrypted with that CMK.
 
-Three properties make this matter:
+## Repository layout
 
-- **Revocability**: An IAM policy change or a disabled key immediately cuts
-  off any further access to your data — no migration, no deletion required.
-- **Auditability**: Every encrypt/decrypt operation runs through your own
-  KMS and lands in your own audit log (CloudTrail, Cloud Audit Logs, etc.).
-  You don't have to trust the provider's logging — you see it yourself.
-- **Compliance on demand**: Many regulated industries (finance, healthcare,
-  public sector) now explicitly require "customer-controlled encryption
-  keys" as proof of data sovereignty. Without BYOK, that checkbox on a
-  customer's security questionnaire often simply can't be ticked.
+```
+aiven-byok-demo/
+├── README.md              # Background on BYOK (this repo's landing page)
+├── aws/
+│   ├── demo.sh            # avn CLI + aws CLI walkthrough
+│   ├── main.tf             # Terraform equivalent
+│   └── variables.tf
+├── azure/
+│   ├── demo.sh             # avn CLI + az CLI walkthrough
+│   ├── main.tf
+│   └── variables.tf
+└── gcp/
+    ├── demo.sh             # avn CLI + gcloud CLI walkthrough
+    ├── main.tf
+    └── variables.tf
+```
 
-## Motivation aside — what does this look like in practice?
+Pick the folder for your cloud provider; each one is self-contained.
 
-Using Aiven as an example, which offers BYOK for Kafka, PostgreSQL, and other
-services via Google Cloud KMS, AWS KMS, Azure Key Vault, and OCI Vault, the
-flow is easy to show. The pattern is similar across most providers: create
-the key → grant access → register the key → attach it to a service.
+## Prerequisites (all clouds)
 
-### 1. Create the key in your own KMS
+- [`avn` CLI](https://github.com/aiven/aiven-client) installed and logged in (`avn user login`).
+- An Aiven project with the **BYOC + BYOK enterprise feature** enabled. This is not on by default — contact Aiven support/sales first, or the CMK creation step will fail.
+- Your cloud provider's CLI installed and authenticated:
+  - AWS: `aws` CLI, credentials with `kms:CreateKey` and `kms:PutKeyPolicy` permissions.
+  - Azure: `az` CLI, logged in as a user with **Owner** or **Contributor + User Access Administrator** on the target subscription/resource group (needed to create the Key Vault and assign roles).
+  - GCP: `gcloud` CLI, authenticated against a project where you can create KMS key rings/keys and edit their IAM policy (effectively `roles/cloudkms.admin` or equivalent).
+- [Terraform](https://developer.hashicorp.com/terraform) ≥ 1.x if you want to use the `.tf` files instead of the shell scripts.
+
+**Heads-up:** the cloud-side KMS/Key Vault permissions above are usually the slow part. If you're not the admin of your cloud account, budget time to get the right role assigned before you start — the Aiven-side steps take minutes once the key is ready.
+
+## Option A — Run it with the `avn` CLI (`demo.sh`)
+
+Each `demo.sh` is a self-contained script. Set the required environment variables and run it.
+
+### AWS
 
 ```bash
-gcloud kms keyrings create aiven-byok-keyring \
-  --location us-central1 \
-  --project my-gcp-project
-
-gcloud kms keys create aiven-byok-key \
-  --location us-central1 \
-  --keyring aiven-byok-keyring \
-  --purpose asymmetric-encryption \
-  --default-algorithm rsa-decrypt-oaep-2048-sha256 \
-  --project my-gcp-project
+cd aws
+PROJECT=my-aiven-project AWS_REGION=eu-central-1 ./demo.sh
 ```
 
-The key is created and physically stays inside your own cloud organization.
+What it does:
+1. Creates a symmetric AWS KMS key.
+2. Looks up Aiven's IAM principal for your project via `avn project cmks accessors`.
+3. Appends an `AllowAivenBYOK` statement to the key's policy, granting `kms:Encrypt`, `kms:Decrypt`, `kms:GenerateDataKey`, `kms:DescribeKey` only.
+4. Registers the key as the project's default CMK.
+5. Creates a Kafka and a PostgreSQL service, both bound to that CMK.
+6. Waits for both services to reach `RUNNING` and prints the CMK status.
 
-### 2. Grant the provider scoped access
+Optional overrides: `CLOUD_NAME`, `KAFKA_PLAN`, `PG_PLAN`, `KAFKA_NAME`, `PG_NAME`.
+
+### Azure
 
 ```bash
-gcloud kms keys add-iam-policy-binding aiven-byok-key \
-  --location us-central1 \
-  --keyring aiven-byok-keyring \
-  --project my-gcp-project \
-  --member "group:<aiven-access-group>@aiven.io" \
-  --role "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+cd azure
+PROJECT=my-aiven-project RESOURCE_GROUP=aiven-byok-demo LOCATION=germanywestcentral \
+  VAULT_NAME=aiven-byok-demo-kv ./demo.sh
 ```
 
-Encrypt/decrypt only — no rights to rotate, export, or delete. That
-restriction is the real core of BYOK: control stays granular and stays with
-the key owner.
+What it does:
+1. Registers the `Microsoft.KeyVault` resource provider (safe to skip if already done).
+2. Creates a resource group and a Key Vault using the **RBAC authorization model** (the legacy access-policy model will not work here).
+3. Creates an RSA-2048 key inside the vault.
+4. Looks up Aiven's Azure AD `app_id` via `avn project cmks accessors`.
+5. Registers Aiven's application as a service principal in your own tenant (`az ad sp create`).
+6. Assigns the **Key Vault Crypto User** role on the vault to that service principal.
+7. Registers the key as the project's default CMK.
+8. Creates a Kafka and a PostgreSQL service bound to that CMK, and waits for both to be `RUNNING`.
 
-### 3. Register the key as a customer-managed key
+Optional overrides: `KEY_NAME`, `CLOUD_NAME`, `KAFKA_PLAN`, `PG_PLAN`, `KAFKA_NAME`, `PG_NAME`.
+
+### GCP
 
 ```bash
-avn project cmks create \
-  --project my-project \
-  --provider gcp \
-  --resource "projects/my-gcp-project/locations/us-central1/keyRings/aiven-byok-keyring/cryptoKeys/aiven-byok-key" \
-  --default-cmk
+cd gcp
+PROJECT=my-aiven-project GCP_PROJECT=my-gcp-project REGION=europe-west3 \
+  KEYRING_NAME=aiven-byok-keyring KEY_NAME=aiven-byok-key ./demo.sh
 ```
 
-### 4. Attach services to the key
+What it does:
+1. Creates a KMS key ring and an **asymmetric** key (`rsa-decrypt-oaep-2048-sha256`) — GCP is the one cloud here where Aiven specifically requires an asymmetric key.
+2. Looks up Aiven's access group for your project via `avn project cmks accessors`.
+3. Grants that group the `roles/cloudkms.cryptoKeyEncrypterDecrypter` role on the key.
+4. Registers the key as the project's default CMK.
+5. Creates a Kafka and a PostgreSQL service bound to that CMK, and waits for both to be `RUNNING`.
+
+Optional overrides: `CLOUD_NAME`, `KAFKA_PLAN`, `PG_PLAN`, `KAFKA_NAME`, `PG_NAME`.
+
+## Option B — Run it with Terraform
+
+Each cloud folder also has a matching `main.tf` / `variables.tf` pair. They assume the KMS key / Key Vault key **already exists and already has Aiven's access granted** — Terraform only handles the Aiven-side registration and service creation, not the cloud-side key/permission setup (that part still has to happen via the cloud's CLI/console first, exactly as in `demo.sh` steps 1–3).
 
 ```bash
-avn service create \
-  --project my-project \
-  --service-type kafka \
-  --plan business-4 \
-  --cloud google-europe-west3 \
-  --cmk-id <CMK_ID> \
-  demo-kafka-byok
+cd aws   # or azure / gcp
+terraform init
+
+export TF_VAR_aiven_api_token="<your Aiven API token>"
+terraform apply \
+  -var="aiven_project=my-aiven-project" \
+  -var="aws_kms_key_arn=arn:aws:kms:eu-central-1:123456789012:key/<key-id>"
+  # (swap the last var for azure_key_vault_key_id / gcp_kms_key_resource in the other folders)
 ```
 
-The same relationship as a Terraform resource:
+Never hardcode `aiven_api_token` in a `.tfvars` file that gets committed — always pass it via `TF_VAR_aiven_api_token` or a secret manager.
 
-```hcl
-resource "aiven_cmk" "gcp_cmk" {
-  project      = var.aiven_project
-  cmk_provider = "gcp"
-  resource     = var.gcp_kms_key_resource
-  default_cmk  = true
-}
+Each `main.tf` creates:
+- `aiven_cmk` — registers your cloud key as the project's customer-managed key.
+- `aiven_kafka` — a Kafka service bound to that CMK.
+- `aiven_pg` — a PostgreSQL service bound to that CMK.
 
-resource "aiven_kafka" "demo_kafka" {
-  project      = var.aiven_project
-  service_name = "demo-kafka-byok"
-  plan         = "business-4"
-  cloud_name   = "google-europe-west3"
-  cmk_id       = aiven_cmk.gcp_cmk.cmk_id
-}
+And outputs the CMK ID/status plus the (sensitive) service connection URIs.
+
+## Verifying it worked
+
+Regardless of which path you used:
+
+```bash
+avn project cmks get --project my-aiven-project --cmk-id <CMK_ID> -v
 ```
 
-From this point on, backups, data at rest, and the transfer between the
-service node and backup storage are all encrypted exclusively with a key
-your own organization can inspect, rotate, or revoke at any time.
+This should show the CMK's provider, resource identifier, and status. From here on, backups and data at rest for both services are encrypted exclusively with your own key.
 
-## Why this isn't a niche concern
+## Cleaning up
 
-A common objection: "We trust our cloud provider anyway." That may be true —
-but trust isn't a control mechanism, and auditors, customers, and regulators
-increasingly want verifiable proof rather than assurances. BYOK shifts the
-question from "do I trust the provider?" to "can I technically prove and, if
-needed, instantly revoke access?" — and that's a fundamentally different
-security posture.
+The scripts don't tear anything down automatically. To avoid leaving demo services (and demo keys) running:
 
-At the same time, BYOK isn't a free pass. If your own key gets accidentally
-deleted or a permission is misconfigured, your data is just as
-unrecoverable as it would be with a provider-managed key — except now the
-responsibility sits entirely with you. Adopting BYOK means taking on
-operational responsibility for key lifecycle, rotation, and backup strategy
-in your own KMS. That's the price of the extra control — and for most
-regulated workloads, it's a price worth paying.
+```bash
+avn service terminate --project my-aiven-project demo-kafka-byok
+avn service terminate --project my-aiven-project demo-pg-byok
+avn project cmks delete --project my-aiven-project --cmk-id <CMK_ID>
+```
 
-## Bottom line
+...then remove the KMS key / Key Vault / key ring on the cloud side through its own console or CLI, if you created it purely for this demo.
 
-BYOK isn't a compliance checkbox you tick once and forget. It's an
-architectural decision to retain genuine cryptographic sovereignty over your
-own data while still benefiting from managed services. The effort to create
-a key in your own KMS and grant a provider scoped access is modest — the
-gain in security and trust is substantial. For any organization handling
-data in regulated or security-critical contexts, BYOK is increasingly less
-an option and more a baseline requirement.
+## Related reading
+
+A longer write-up on why BYOK matters and what's happening under the hood is in [`byok-sovereignty-blog-post.md`](./byok-sovereignty-blog-post.md) in this same repo.
