@@ -80,8 +80,21 @@ CMK_ID=$(avn project cmks create \
   --provider aws \
   --resource "${KEY_ARN}" \
   --default-cmk \
-  --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+  --json | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['id'])")
 echo "    CMK ID: ${CMK_ID}"
+
+
+echo "==> 4) Registering CMK in Aiven Project"
+CMK_ID=$(avn project cmks create \
+  --project "${PROJECT}" \
+  --provider gcp \
+  --resource "${KEY_RESOURCE}" \
+  --default-cmk \
+  --json | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['id'])")
+echo "    CMK ID: ${CMK_ID}"
+
+
+
 
 echo "==> 5) Create the Kafka service with BYOK"
 avn service create \

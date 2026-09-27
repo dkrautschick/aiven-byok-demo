@@ -68,7 +68,7 @@ CMK_ID=$(avn project cmks create \
   --provider azure \
   --resource "${KEY_ID}" \
   --default-cmk \
-  --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+  --json | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['id'])")
 echo "    CMK ID: ${CMK_ID}"
 
 echo "==> 7) Create the Kafka service with BYOK"
